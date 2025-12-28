@@ -476,7 +476,7 @@ export default function CreatePage() {
 
   const presetBgOptions: BgOption[] = useMemo(
     () => [
-      { id: "waikiki", name: "Waikiki Beach", src: "/bg/waikiki.jpg" },
+      { id: "waikiki", name: "Waikiki Beach", src: "/bg/waikiki.png" },
       { id: "diamond", name: "Diamond Head", src: "/bg/diamondhead.jpg" },
       { id: "night", name: "Honolulu Night", src: "/bg/night.jpg" },
     ],
