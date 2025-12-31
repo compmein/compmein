@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
-import { useTokenBalance } from "@/app/create/useTokenBalance";
+import { useTokenBalance } from "../components/useTokenBalance";
 
 function shortId(id: string) {
   if (!id) return "";

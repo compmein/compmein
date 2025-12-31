@@ -86,6 +86,21 @@ export default function HomePage() {
           </Link>
 
           <Link
+            href="/bg"
+            className="rounded-xl bg-neutral-900 px-5 py-3 text-white hover:opacity-90"
+          >
+            Generate BG
+          </Link>
+
+<Link
+  href="/video"
+  className="rounded-xl bg-neutral-900 px-5 py-3 text-white hover:opacity-90"
+>
+  Video
+</Link>
+
+
+          <Link
             href="/gifts"
             className="rounded-xl border px-5 py-3 hover:bg-neutral-50"
           >

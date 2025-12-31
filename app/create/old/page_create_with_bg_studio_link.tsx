@@ -5,9 +5,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Konva from "konva";
 import { Stage, Layer, Image as KonvaImage, Transformer, Ellipse } from "react-konva";
-import { useTokenBalance } from "../components/useTokenBalance";
+import { useTokenBalance } from "./useTokenBalance";
+import { TokenBadge } from "./TokenBadge";
 import { SubjectSection } from "./components/SubjectSection";
-import AppHeader from "../components/AppHeader";
 
 const DEFAULT_SYSTEM_PROMPT = `
 ### ROLE: PRECISION IMAGE EDITOR
@@ -27,6 +27,7 @@ const TOKEN_COSTS = {
   CUTOUT: 1,
   QUICK: 15,
   PRO: 45,
+  BG: 15,
 } as const;
 
 type BgOption = { id: string; name: string; src: string; isUser?: boolean };
@@ -256,39 +257,6 @@ function safeSetLocalStorageDataUrl(key: string, dataUrl: string, maxLen = 4_000
     }
   }
 }
-
-// ✅ Persist a single uploaded background safely:
-// - Try localStorage (small dataUrl)
-// - Fallback to IndexedDB blob (large dataUrl)
-async function persistUploadedBg(dataUrl: string) {
-  try {
-    // try localStorage first
-    const prev = localStorage.getItem("lastBgDataUrl");
-    safeSetLocalStorageDataUrl("lastBgDataUrl", dataUrl);
-    const now = localStorage.getItem("lastBgDataUrl");
-    if (now && now === dataUrl) {
-      localStorage.setItem("lastBgWhere", "ls");
-      // clear idb copy to save space
-      try {
-        await idbDel("lastBgBlob");
-      } catch {}
-      return;
-    }
-
-    // fallback to idb
-    const blob = await dataUrlToBlob(dataUrl);
-    await idbSet("lastBgBlob", blob);
-    localStorage.setItem("lastBgWhere", "idb");
-    localStorage.removeItem("lastBgDataUrl");
-  } catch {
-    // if anything fails, at least attempt to clear broken keys
-    try {
-      localStorage.removeItem("lastBgDataUrl");
-      localStorage.setItem("lastBgWhere", "none");
-    } catch {}
-  }
-}
-
 
 // --- IndexedDB helpers (store large images safely; avoids localStorage quota) ---
 const IDB_DB = "dreamcombine";
@@ -526,17 +494,20 @@ export default function CreatePage() {
   const [previewScale, setPreviewScale] = useState(0.3);
 
   // ✅ 用户上传背景（保留 1 张）
-  const [userBgDataUrl, setUserBgDataUrl] = useState<string | null>(null);
-  // ✅ AI BG from BG Studio (persisted)
-  const [aiBgDataUrl, setAiBgDataUrl] = useState<string | null>(null);
+  const \[userBgDataUrl, setUserBgDataUrl\] = useState<string \| null>\(null\);
+
+  // ✅ AI 背景生成（可选）
+  const [bgPrompt, setBgPrompt] = useState<string>(
+    "A clean, realistic background scene. High quality, natural lighting, no people."
+  );
+  const [isBgGenerating, setIsBgGenerating] = useState(false);
 
   const bgOptions: BgOption[] = useMemo(() => {
     const userOpt: BgOption[] = userBgDataUrl
       ? [{ id: "user", name: "你上传的背景", src: userBgDataUrl, isUser: true }]
       : [];
-    const aiOpt: BgOption[] = aiBgDataUrl ? [{ id: "ai", name: "AI 生成背景", src: aiBgDataUrl }] : [];
-    return [...aiOpt, ...userOpt, ...presetBgOptions];
-  }, [presetBgOptions, userBgDataUrl, aiBgDataUrl]);
+    return [...userOpt, ...presetBgOptions];
+  }, [presetBgOptions, userBgDataUrl]);
 
   const [bgSrc, setBgSrc] = useState<string>(() => presetBgOptions[0].src);
   const bgImg = useHtmlImage(bgSrc);
@@ -618,53 +589,13 @@ export default function CreatePage() {
       setStageSize(stageSizeFromAllowedAR(savedAR));
     }
 
-    const savedAiBg = localStorage.getItem("lastAIBgDataUrl") || null;
-    if (savedAiBg) {
-      setAiBgDataUrl(savedAiBg);
-      setBgSrc(savedAiBg);
+    const savedBg = localStorage.getItem("lastBgDataUrl");
+    if (savedBg) {
+      setUserBgDataUrl(savedBg);
+      setBgSrc(savedBg);
     }
 
-    // ✅ Restore uploaded BG independently (even if AI BG exists)
-    (async () => {
-      try {
-        const where = localStorage.getItem("lastBgWhere");
-        if (where === "idb") {
-          const blob = await idbGet<Blob>("lastBgBlob");
-          if (blob) {
-            const dataUrl = await blobToDataUrl2(blob);
-            setUserBgDataUrl(dataUrl);
-            return;
-          }
-        }
-        const savedBg = localStorage.getItem("lastBgDataUrl");
-        if (savedBg) setUserBgDataUrl(savedBg);
-      } catch {
-        const savedBg = localStorage.getItem("lastBgDataUrl");
-        if (savedBg) setUserBgDataUrl(savedBg);
-      }
-    })();
-
-    // If there is no AI BG selected, prefer uploaded BG as current bgSrc
-    (async () => {
-      if (savedAiBg) return;
-      try {
-        const where = localStorage.getItem("lastBgWhere");
-        if (where === "idb") {
-          const blob = await idbGet<Blob>("lastBgBlob");
-          if (blob) {
-            const dataUrl = await blobToDataUrl2(blob);
-            setBgSrc(dataUrl);
-            return;
-          }
-        }
-        const savedBg = localStorage.getItem("lastBgDataUrl");
-        if (savedBg) setBgSrc(savedBg);
-      } catch {
-        const savedBg = localStorage.getItem("lastBgDataUrl");
-        if (savedBg) setBgSrc(savedBg);
-      }
-    })();
-const savedRef = localStorage.getItem("lastReferenceDataUrl");
+    const savedRef = localStorage.getItem("lastReferenceDataUrl");
     if (savedRef) {
       setStoredReferenceDataUrl(savedRef);
       setReferenceChoice("uploaded");
@@ -845,8 +776,60 @@ const savedRef = localStorage.getItem("lastReferenceDataUrl");
     } catch {}
 
     setUserBgDataUrl(dataUrl);
-    await persistUploadedBg(dataUrl);
+    safeSetLocalStorageDataUrl("lastBgDataUrl", dataUrl);
     setBgSrc(dataUrl);
+
+  }
+
+  /** ✅ Generate AI BG：生成一个新背景并自动应用到画布（需要后端 /api/nanobanana/generate-bg） */
+  async function runGenerateAiBg() {
+    if (!tokenReady) {
+      alert("Token 正在加载，请稍等…");
+      return;
+    }
+    if (!hasTokens(TOKEN_COSTS.BG)) {
+      alert(`Token 不够：Generate AI BG 需要 ${TOKEN_COSTS.BG} Tokens`);
+      return;
+    }
+
+    setIsBgGenerating(true);
+    try {
+      const resp = await fetch("/api/nanobanana/generate-bg", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: bgPrompt,
+          aspectRatio: stageAR,
+          imageSize: "SAFE_4MP",
+        }),
+      });
+
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => "");
+        throw new Error(txt || `HTTP ${resp.status}`);
+      }
+
+      const json = await resp.json();
+      const base64 = json?.imageBase64;
+      const mimeType = json?.mimeType || "image/png";
+      if (!base64) throw new Error("No image returned.");
+
+      const outDataUrl = `data:${mimeType};base64,${base64}`;
+
+      // 作为“你上传的背景”写入（刷新也能保留）
+      setUserBgDataUrl(outDataUrl);
+      safeSetLocalStorageDataUrl("lastBgDataUrl", outDataUrl);
+      setBgSrc(outDataUrl);
+
+      await refresh();
+    } catch (e: any) {
+      console.error(e);
+      alert(
+        "Generate AI BG 失败：请确认你已实现 /api/nanobanana/generate-bg （POST JSON: {prompt, aspectRatio, imageSize}）"
+      );
+    } finally {
+      setIsBgGenerating(false);
+    }
   }
 
   /** ✅ 上传 reference：按 1080p 保存（显示更清晰），发送前仍会压到 ≤512 */
@@ -1121,8 +1104,19 @@ ${combinePrompt}`;
   return (
     <div className="space-y-6">
       <div className="rounded-3xl border bg-white p-6 shadow-sm">
-        <AppHeader title="合成 Honolulu 照片" />
-<p className="mt-2 text-sm text-neutral-600">
+        <div className="flex items-start justify-between gap-4">
+          <h2 className="text-xl font-semibold">合成 Honolulu 照片</h2>
+
+          <Link
+            href="/account"
+            className="inline-flex items-center rounded-xl hover:bg-neutral-50 active:scale-[0.99] transition"
+            title="进入账号页"
+          >
+            <TokenBadge balance={tokenBalance} />
+          </Link>
+        </div>
+
+        <p className="mt-2 text-sm text-neutral-600">
           ✅ Canvas / Regular Comp / Nano Banana Image 1 完全一致（无留白：背景自动居中裁切）。
           <br />
           ✅ 画布尺寸采用「安全版表」：控制在 ≤4MP（吃满 Pro 档但不超 4MP）。
@@ -1168,17 +1162,27 @@ ${combinePrompt}`;
                     />
                     <div className="mt-1 text-xs text-neutral-500">
                       上传背景会自动压到 ≤4MP，并保存 1 张（刷新后还在）。比例会匹配 Gemini 允许列表，背景无留白铺满（居中裁切）。
+                    </div>
 
+                    {/* ✅ AI 背景生成 */}
                     <div className="mt-3 rounded-2xl border p-3">
                       <div className="text-sm font-medium">AI 背景</div>
-                      <div className="mt-1 text-xs text-neutral-500">在独立页面里生成背景，生成后会自动带回本页并保存。</div>
-                      <Link
-                        href="/bg"
-                        className="mt-2 block w-full rounded-xl bg-neutral-900 px-4 py-2 text-center text-sm text-white hover:opacity-90"
+                      <div className="mt-1 text-xs text-neutral-500">输入一句描述，点击生成，会自动替换当前背景。</div>
+                      <textarea
+                        value={bgPrompt}
+                        onChange={(e) => setBgPrompt(e.target.value)}
+                        rows={3}
+                        className="mt-2 w-full resize-none rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. A sunny beach with palm trees, realistic photo, no people."
+                      />
+                      <button
+                        onClick={runGenerateAiBg}
+                        className="mt-2 w-full rounded-xl bg-neutral-900 px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-40"
+                        disabled={isBgGenerating || !hasTokens(TOKEN_COSTS.BG)}
+                        title={!hasTokens(TOKEN_COSTS.BG) ? `Not enough tokens (requires ${TOKEN_COSTS.BG})` : ""}
                       >
-                        Go to AI BG Studio
-                      </Link>
-                    </div>
+                        {isBgGenerating ? "Generating..." : `Generate AI BG · ${TOKEN_COSTS.BG} Token`}
+                      </button>
                     </div>
 
                     <div className="mt-2 text-xs text-neutral-600">
@@ -1214,6 +1218,17 @@ ${combinePrompt}`;
                 />
               </div>
 
+              {/* Regular Comp download */}
+              <div className="mt-4 rounded-2xl border p-4">
+                <div className="text-sm font-medium">输出（手动合成）</div>
+                <div className="mt-1 text-xs text-neutral-500">导出当前画布合成图（JPG q=1）</div>
+                <button
+                  onClick={downloadCustomer}
+                  className="mt-3 w-full rounded-xl border px-4 py-2.5 text-sm hover:bg-neutral-50"
+                >
+                  Regular Comp - download
+                </button>
+              </div>
             </details>
 
             {/* AI Comp */}
@@ -1327,164 +1342,149 @@ ${combinePrompt}`;
 
           {/* 右侧：画布 + AI输出 */}
           <div className="flex-1 space-y-4">
-            
-{/* Regular Comp 预览 */}
-<details open className="rounded-3xl border bg-white p-6 shadow-sm">
-  <summary className="cursor-pointer select-none text-base font-semibold">Regular Comp</summary>
-
-  <div className="mt-3 flex items-center justify-between">
-    <div className="text-sm text-neutral-600">（手动合成预览 / 导出 JPG）</div>
-    <button
-      onClick={downloadCustomer}
-      className="rounded-xl bg-neutral-900 px-4 py-2 text-sm text-white hover:opacity-90"
-      title="下载当前 Regular Comp（JPG）"
-    >
-      下载
-    </button>
-  </div>
-
-  <div className="mt-4 flex gap-4 items-end">
-    <div className="flex-1 min-w-0">
-      {/* 预览缩放 */}
-      <div className="mb-2 flex items-center gap-3 text-xs text-neutral-600">
-        <span className="shrink-0">预览缩放</span>
-        <input
-          type="range"
-          min={0.1}
-          max={1}
-          step={0.05}
-          value={previewScale}
-          onChange={(e) => setPreviewScale(Number(e.target.value))}
-          className="w-full"
-        />
-        <span className="shrink-0">{Math.round(previewScale * 100)}%</span>
-        <span className="ml-2 shrink-0 text-neutral-400">（默认 30%）</span>
-      </div>
-
-      {/* ✅ 预览容器：固定高度，不会被缩放撑大；内容居中 */}
-      <div
-        className="rounded-2xl border bg-neutral-100 overflow-hidden flex items-center justify-center"
-        style={{ height: PREVIEW_BOX_H }}
-      >
-        <div style={{ width: scaledStage.w, height: scaledStage.h }}>
-          <div
-            style={{
-              transform: `scale(${previewScale})`,
-              transformOrigin: "top left",
-              width: stageSize.w,
-              height: stageSize.h,
-            }}
-          >
-            <Stage width={stageSize.w} height={stageSize.h} ref={stageRef}>
-              <Layer>
-                {bgImg && bgCrop && (
-                  <KonvaImage
-                    image={bgImg}
-                    x={0}
-                    y={0}
-                    width={stageSize.w}
-                    height={stageSize.h}
-                    listening={false}
-                    cropX={bgCrop.cropX}
-                    cropY={bgCrop.cropY}
-                    cropWidth={bgCrop.cropWidth}
-                    cropHeight={bgCrop.cropHeight}
+            <div className="flex gap-4 items-end">
+              <div className="flex-1 min-w-0">
+                {/* 预览缩放 */}
+                <div className="mb-2 flex items-center gap-3 text-xs text-neutral-600">
+                  <span className="shrink-0">预览缩放</span>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    value={previewScale}
+                    onChange={(e) => setPreviewScale(Number(e.target.value))}
+                    className="w-full"
                   />
-                )}
+                  <span className="shrink-0">{Math.round(previewScale * 100)}%</span>
+                  <span className="ml-2 shrink-0 text-neutral-400">（默认 30%）</span>
+                </div>
 
-                {shadowDraw && (
-                  <>
-                    <Ellipse
-                      ref={outerShadowRef}
-                      x={shadowDraw.outer.x}
-                      y={shadowDraw.outer.y}
-                      radiusX={shadowDraw.outer.radiusX}
-                      radiusY={shadowDraw.outer.radiusY}
-                      fill="black"
-                      opacity={shadowDraw.outer.opacity}
-                      scaleY={shadowDraw.outer.scaleY}
-                      listening={false}
-                      filters={[Konva.Filters.Blur]}
-                      blurRadius={shadowDraw.outer.blur}
-                    />
-                    <Ellipse
-                      ref={innerShadowRef}
-                      x={shadowDraw.inner.x}
-                      y={shadowDraw.inner.y}
-                      radiusX={shadowDraw.inner.radiusX}
-                      radiusY={shadowDraw.inner.radiusY}
-                      fill="black"
-                      opacity={shadowDraw.inner.opacity}
-                      scaleY={shadowDraw.inner.scaleY}
-                      listening={false}
-                      filters={[Konva.Filters.Blur]}
-                      blurRadius={shadowDraw.inner.blur}
-                    />
-                  </>
-                )}
+                {/* ✅ 预览容器：固定高度，不会被缩放撑大；内容居中 */}
+                <div
+                  className="rounded-2xl border bg-neutral-100 overflow-hidden flex items-center justify-center"
+                  style={{ height: PREVIEW_BOX_H }}
+                >
+                  <div style={{ width: scaledStage.w, height: scaledStage.h }}>
+                    <div
+                      style={{
+                        transform: `scale(${previewScale})`,
+                        transformOrigin: "top left",
+                        width: stageSize.w,
+                        height: stageSize.h,
+                      }}
+                    >
+                      <Stage width={stageSize.w} height={stageSize.h} ref={stageRef}>
+                        <Layer>
+                          {bgImg && bgCrop && (
+                            <KonvaImage
+                              image={bgImg}
+                              x={0}
+                              y={0}
+                              width={stageSize.w}
+                              height={stageSize.h}
+                              listening={false}
+                              cropX={bgCrop.cropX}
+                              cropY={bgCrop.cropY}
+                              cropWidth={bgCrop.cropWidth}
+                              cropHeight={bgCrop.cropHeight}
+                            />
+                          )}
 
-                {personImg && (
-                  <KonvaImage
-                    ref={personNodeRef}
-                    image={personImg}
-                    x={person.x}
-                    y={person.y}
-                    draggable
-                    rotation={person.rotation}
-                    scaleX={person.scale}
-                    scaleY={person.scale}
-                    onDragMove={() => updatePersonRect()}
-                    onDragEnd={(e) => {
-                      setPerson((p) => ({ ...p, x: e.target.x(), y: e.target.y() }));
-                      updatePersonRect();
-                    }}
-                    onTransformEnd={() => {
-                      const node = personNodeRef.current;
-                      const scaleX = node.scaleX();
-                      node.scaleX(1);
-                      node.scaleY(1);
+                          {shadowDraw && (
+                            <>
+                              <Ellipse
+                                ref={outerShadowRef}
+                                x={shadowDraw.outer.x}
+                                y={shadowDraw.outer.y}
+                                radiusX={shadowDraw.outer.radiusX}
+                                radiusY={shadowDraw.outer.radiusY}
+                                fill="black"
+                                opacity={shadowDraw.outer.opacity}
+                                scaleY={shadowDraw.outer.scaleY}
+                                listening={false}
+                                filters={[Konva.Filters.Blur]}
+                                blurRadius={shadowDraw.outer.blur}
+                              />
+                              <Ellipse
+                                ref={innerShadowRef}
+                                x={shadowDraw.inner.x}
+                                y={shadowDraw.inner.y}
+                                radiusX={shadowDraw.inner.radiusX}
+                                radiusY={shadowDraw.inner.radiusY}
+                                fill="black"
+                                opacity={shadowDraw.inner.opacity}
+                                scaleY={shadowDraw.inner.scaleY}
+                                listening={false}
+                                filters={[Konva.Filters.Blur]}
+                                blurRadius={shadowDraw.inner.blur}
+                              />
+                            </>
+                          )}
 
-                      setPerson((p) => ({
-                        ...p,
-                        x: node.x(),
-                        y: node.y(),
-                        rotation: node.rotation(),
-                        scale: clamp(scaleX, 0.1, 3),
-                      }));
-                      updatePersonRect();
-                    }}
-                    onClick={() => {
-                      trRef.current?.nodes([personNodeRef.current]);
-                    }}
-                    onTap={() => {
-                      trRef.current?.nodes([personNodeRef.current]);
-                    }}
-                  />
-                )}
+                          {personImg && (
+                            <KonvaImage
+                              ref={personNodeRef}
+                              image={personImg}
+                              x={person.x}
+                              y={person.y}
+                              draggable
+                              rotation={person.rotation}
+                              scaleX={person.scale}
+                              scaleY={person.scale}
+                              onDragMove={() => updatePersonRect()}
+                              onDragEnd={(e) => {
+                                setPerson((p) => ({ ...p, x: e.target.x(), y: e.target.y() }));
+                                updatePersonRect();
+                              }}
+                              onTransformEnd={() => {
+                                const node = personNodeRef.current;
+                                const scaleX = node.scaleX();
+                                node.scaleX(1);
+                                node.scaleY(1);
 
-                {personImg && (
-                  <Transformer
-                    ref={trRef}
-                    rotateEnabled
-                    enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
-                    boundBoxFunc={(oldBox, newBox) => {
-                      if (newBox.width < 30 || newBox.height < 30) return oldBox;
-                      return newBox;
-                    }}
-                  />
-                )}
-              </Layer>
-            </Stage>
-          </div>
-        </div>
-      </div>
+                                setPerson((p) => ({
+                                  ...p,
+                                  x: node.x(),
+                                  y: node.y(),
+                                  rotation: node.rotation(),
+                                  scale: clamp(scaleX, 0.1, 3),
+                                }));
+                                updatePersonRect();
+                              }}
+                              onClick={() => {
+                                trRef.current?.nodes([personNodeRef.current]);
+                              }}
+                              onTap={() => {
+                                trRef.current?.nodes([personNodeRef.current]);
+                              }}
+                            />
+                          )}
 
-      <div className="mt-2 text-xs text-neutral-500">
-        说明：这里只是“显示缩放”，导出 / AI 输入仍然是 {stageSize.w}×{stageSize.h}（{mpText(stageSize.w, stageSize.h)}）。
-      </div>
-    </div>
-  </div>
-</details>{/* AI 输出 */}
+                          {personImg && (
+                            <Transformer
+                              ref={trRef}
+                              rotateEnabled
+                              enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
+                              boundBoxFunc={(oldBox, newBox) => {
+                                if (newBox.width < 30 || newBox.height < 30) return oldBox;
+                                return newBox;
+                              }}
+                            />
+                          )}
+                        </Layer>
+                      </Stage>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-2 text-xs text-neutral-500">
+                  说明：这里只是“显示缩放”，导出 / AI 输入仍然是 {stageSize.w}×{stageSize.h}（{mpText(stageSize.w, stageSize.h)}）。
+                </div>
+              </div>
+            </div>
+
+            {/* AI 输出 */}
             <details open className="rounded-3xl border bg-white p-6 shadow-sm">
               <summary className="cursor-pointer select-none text-base font-semibold">AI 输出</summary>
 
